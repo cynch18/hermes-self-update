@@ -1,0 +1,4 @@
+# 保持 Windows 脚本原始换行与 BOM，禁止 git 做 EOL 转换
+*.ps1 -text
+*.cmd -text
+*.md -text
