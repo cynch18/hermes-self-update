@@ -817,8 +817,9 @@ function Invoke-HermesUpdate {
             $nextSampleAt = $now.AddSeconds($StallSampleSeconds)
             $rate = Get-ProgressRate -Samples $samples -Now $now
             $rateText = $rate.Text
-            # “过慢”只在两个条件下才累计：本阶段已跑满 90s（基线可信）＋ 确实已有 30s 零进展。
-            # 纯速率对比容易在 IO 抖动时误杀，宁可让阶段硬上限兜底。
+            # “过慢”只在两个条件下才累计：本阶段已跑满 90s（基线可信）＋ 确实已有 30s 无活动。
+            # 零进展不在这里判死（见 Get-ProgressRate）——那是阶段静默看门狗的职责，
+            # 否则 6 次采样（60s）会抢在 120-300s 的静默阈值前误杀正常的长任务。
             if ($rate.IsSlow -and ($now - $stageStart).TotalMinutes -ge 1.5 -and $silence -ge 30) { $lowStreak++ } else { $lowStreak = 0 }
         }
 
@@ -1011,7 +1012,7 @@ function Test-DesktopBackendReady {
             $buf = New-Object byte[] $readLen
             $read = $fs.Read($buf, 0, $readLen)
             $text = [System.Text.Encoding]::UTF8.GetString($buf, 0, $read)
-            return [bool]($text -match 'HERMES_BACKEND_READY')
+            return [bool]($text -match 'HERMES_BACKEND_READY|Hermes gateway is ready|Hermes backend is ready')
         } finally { $fs.Close() }
     } catch { return $false }
 }
@@ -1174,7 +1175,7 @@ function Get-CurrentStage {
     if ($lines.Count -gt 400) { $lines = $lines[($lines.Count - 400)..($lines.Count - 1)] }
     foreach ($ln in $lines) {
         $l = $ln.ToLower()
-        if ($l -match 'update complete') { $stage = 'tail' }
+        if ($l -match 'update complete|code updated') { $stage = 'tail' }
         elseif ($l -match 'finishing an interrupted source update|completing source-update dependencies|source completion') { $stage = 'completion' }
         elseif ($l -match 'building the desktop app|building desktop packaged app|packaging the desktop app|desktop\.mjs|build-only') { $stage = 'desktop' }
         elseif ($l -match 'building the web ui|build/web\.mjs') { $stage = 'web' }
@@ -1203,7 +1204,7 @@ function Format-Duration {
 }
 
 function Get-ProgressRate {
-    # 最近 60s 进度 vs 此前 180s 基线；返回是否过慢与显示文本
+    # 最近 60s 进度 vs 前一个 60s 基线；零进展不判“过慢”（交给阶段静默看门狗）
     param($Samples, [datetime]$Now)
     $res = @{ IsSlow = $false; Text = "-" }
     $arr = @($Samples)
@@ -1222,7 +1223,7 @@ function Get-ProgressRate {
     if ($baseWindow -lt 0) { $baseWindow = 0 }
     $basePerMin = [double]$baseWindow / 2.0
     $res.Text = ("+{0}/min" -f (Format-Bytes $recent))
-    if ($basePerMin -gt 0) {
+    if ($basePerMin -gt 0 -and $recent -gt 0) {
         $ratio = ([double]$recent) / $basePerMin
         if ($ratio -lt ($SlowRatioPercent / 100.0)) { $res.IsSlow = $true }
     }
